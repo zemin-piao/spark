@@ -39,8 +39,19 @@ import org.apache.spark.sql.Row
  * @param name        Unique identifier for the rule (used in error reports).
  * @param failIf      SQL query: non-empty result → rule fails.
  * @param description Human-readable label included in [[CommitValidationException]] messages.
+ * @param sample      When `true` (default), the protocol automatically appends `LIMIT 10` to
+ *                    row-returning queries that have no existing `LIMIT` clause, so only a
+ *                    small sample of offending rows is collected. Set to `false` to collect
+ *                    every offending row — useful when you need the full set of violations
+ *                    (e.g. an audit export, or a `GROUP BY` rule where all offending groups
+ *                    must be visible). Has no effect on aggregate/GROUP BY queries, which
+ *                    are never auto-limited regardless of this flag.
  */
-case class SqlValidationRule(name: String, failIf: String, description: String)
+case class SqlValidationRule(
+    name: String,
+    failIf: String,
+    description: String,
+    sample: Boolean = true)
   extends Serializable
 
 /**
@@ -111,7 +122,8 @@ private[io] object SqlValidationRuleJson {
       mapper.createObjectNode()
         .put("name", rule.name)
         .put("failIf", rule.failIf)
-        .put("description", rule.description))
+        .put("description", rule.description)
+        .put("sample", rule.sample))
 
   /** Serialise a sequence of rules to a JSON array string. */
   def toJsonArray(rules: Seq[SqlValidationRule]): String = {
@@ -121,7 +133,8 @@ private[io] object SqlValidationRuleJson {
         mapper.createObjectNode()
           .put("name", r.name)
           .put("failIf", r.failIf)
-          .put("description", r.description))
+          .put("description", r.description)
+          .put("sample", r.sample))
     }
     mapper.writeValueAsString(arrayNode)
   }
@@ -154,10 +167,13 @@ private[io] object SqlValidationRuleJson {
         }
         field.asText()
       }
+      val sampleField = node.get("sample")
+      val sample = if (sampleField != null && sampleField.isBoolean) sampleField.asBoolean() else true
       SqlValidationRule(
         name = str("name"),
         failIf = str("failIf"),
-        description = str("description"))
+        description = str("description"),
+        sample = sample)
     }
   }
 

@@ -174,10 +174,11 @@ class HdfsValidatingCommitProtocol(
 
   /**
    * Appends `LIMIT 10` to row-returning queries that do not already contain a LIMIT clause
-   * (case-insensitive, any form: `LIMIT 10`, `LIMIT ALL`, etc.).
-   * Aggregate queries are returned unchanged.
+   * (case-insensitive, any form: `LIMIT 10`, `LIMIT ALL`, etc.) — but only when
+   * `sample = true`. Aggregate/GROUP BY queries are always returned unchanged.
    */
-  private[datasources] def applyAutoLimit(sql: String): String = {
+  private[datasources] def applyAutoLimit(sql: String, sample: Boolean): String = {
+    if (!sample) return sql
     if (isAggregate(sql)) return sql
     if (sql.trim.toUpperCase.matches("""(?s).*\bLIMIT\b.*""")) return sql
     sql.stripTrailing() + " LIMIT 10"
@@ -216,7 +217,8 @@ class HdfsValidatingCommitProtocol(
         val failedAggNames = resultRows.map(_.getString(0)).toSet
         for (r <- aggRules if failedAggNames.contains(r.name)) {
           val sampleDf = spark.sql(r.failIf.trim.stripSuffix(";"))
-          val sampleRows = sampleDf.collect().take(10).toSeq
+          val allRows = sampleDf.collect()
+          val sampleRows = if (r.sample) allRows.take(10).toSeq else allRows.toSeq
           failures += RuleFailure(r.name, r.description, r.failIf, sampleRows)
         }
       } catch {
@@ -233,7 +235,7 @@ class HdfsValidatingCommitProtocol(
     // --- row-returning fusion via UNION ALL ---
     if (rowRules.nonEmpty) {
       val taggedParts = rowRules.map { r =>
-        val limitedSql = applyAutoLimit(r.failIf).trim.stripSuffix(";")
+        val limitedSql = applyAutoLimit(r.failIf, r.sample).trim.stripSuffix(";")
         s"SELECT '${escapeSingleQuote(r.name)}' AS __rule__, * FROM ($limitedSql) __row_check__"
       }
       val fusedSql = taggedParts.mkString("\nUNION ALL\n")
@@ -246,12 +248,13 @@ class HdfsValidatingCommitProtocol(
           val ruleRows = byRule.getOrElse(r.name, Array.empty)
           if (ruleRows.nonEmpty) {
             // Drop the __rule__ tag column to get the original columns
-            val sampleRows = ruleRows.take(10).map { row =>
+            val takenRows = if (r.sample) ruleRows.take(10) else ruleRows
+            val sampleRows = takenRows.map { row =>
               val values = (1 until row.length).map(row.get)
               org.apache.spark.sql.Row.fromSeq(values)
             }.toSeq
             failures += RuleFailure(r.name, r.description,
-              applyAutoLimit(r.failIf), sampleRows)
+              applyAutoLimit(r.failIf, r.sample), sampleRows)
           }
         }
       } catch {
@@ -272,10 +275,11 @@ class HdfsValidatingCommitProtocol(
       spark: SparkSession,
       rule: SqlValidationRule): Seq[RuleFailure] = {
     logWarning(s"Executing validation rule '${rule.name}' individually (could not be fused).")
-    val sql = applyAutoLimit(rule.failIf).trim.stripSuffix(";")
+    val sql = applyAutoLimit(rule.failIf, rule.sample).trim.stripSuffix(";")
     val rows = spark.sql(sql).collect()
     if (rows.nonEmpty) {
-      Seq(RuleFailure(rule.name, rule.description, sql, rows.take(10).toSeq))
+      val sampleRows = if (rule.sample) rows.take(10).toSeq else rows.toSeq
+      Seq(RuleFailure(rule.name, rule.description, sql, sampleRows))
     } else {
       Seq.empty
     }

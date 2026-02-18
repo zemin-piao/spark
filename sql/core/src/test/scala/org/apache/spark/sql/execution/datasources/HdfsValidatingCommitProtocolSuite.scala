@@ -154,38 +154,46 @@ class HdfsValidatingCommitProtocolSuite extends QueryTest with SharedSparkSessio
     assert(!p.isAggregate("SELECT id, name FROM __output__ WHERE status = 'bad'"))
   }
 
-  test("applyAutoLimit: GROUP BY queries are not given a LIMIT") {
+  test("applyAutoLimit: GROUP BY queries are not given a LIMIT regardless of sample flag") {
     val p = makeProtocol()
     val sql = "SELECT account, SUM(amount) FROM __output__ GROUP BY account HAVING SUM(amount) != 0"
-    assert(p.applyAutoLimit(sql) === sql)
+    assert(p.applyAutoLimit(sql, sample = true) === sql)
+    assert(p.applyAutoLimit(sql, sample = false) === sql)
   }
 
   // ---------------------------------------------------------------------------
   // 8.7 applyAutoLimit
   // ---------------------------------------------------------------------------
 
-  test("applyAutoLimit: appends LIMIT 10 when no LIMIT present") {
+  test("applyAutoLimit: appends LIMIT 10 when no LIMIT present and sample=true") {
     val p = makeProtocol()
     val sql = "SELECT * FROM __output__ WHERE user_id IS NULL"
-    assert(p.applyAutoLimit(sql) === s"$sql LIMIT 10")
+    assert(p.applyAutoLimit(sql, sample = true) === s"$sql LIMIT 10")
+  }
+
+  test("applyAutoLimit: does not append LIMIT when sample=false") {
+    val p = makeProtocol()
+    val sql = "SELECT * FROM __output__ WHERE user_id IS NULL"
+    assert(p.applyAutoLimit(sql, sample = false) === sql)
   }
 
   test("applyAutoLimit: does not duplicate an existing LIMIT") {
     val p = makeProtocol()
     val sql = "SELECT * FROM __output__ WHERE user_id IS NULL LIMIT 5"
-    assert(p.applyAutoLimit(sql) === sql)
+    assert(p.applyAutoLimit(sql, sample = true) === sql)
   }
 
   test("applyAutoLimit: case-insensitive LIMIT detection") {
     val p = makeProtocol()
     val sql = "SELECT * FROM __output__ WHERE a = 1 limit 3"
-    assert(p.applyAutoLimit(sql) === sql)
+    assert(p.applyAutoLimit(sql, sample = true) === sql)
   }
 
-  test("applyAutoLimit: aggregate queries are returned unchanged") {
+  test("applyAutoLimit: aggregate queries are returned unchanged regardless of sample flag") {
     val p = makeProtocol()
     val sql = "SELECT COUNT(*) < 100 FROM __output__"
-    assert(p.applyAutoLimit(sql) === sql)
+    assert(p.applyAutoLimit(sql, sample = true) === sql)
+    assert(p.applyAutoLimit(sql, sample = false) === sql)
   }
 
   // ---------------------------------------------------------------------------

@@ -112,6 +112,35 @@ class ValidationRuleBuilderTests(unittest.TestCase):
         rules = json.loads(conf_store[_CONF_RULES])
         self.assertEqual([r["name"] for r in rules], ["first", "second", "third"])
 
+    def test_fail_if_sample_false_is_serialised(self):
+        """fail_if(sample=False) stores sample=False in the rule dict."""
+        mock_spark = MagicMock()
+        conf_store = {}
+        mock_spark.conf.set.side_effect = lambda k, v: conf_store.__setitem__(k, v)
+
+        builder = (
+            ValidationRuleBuilder()
+            .fail_if("SELECT * FROM __output__ WHERE id IS NULL", name="no_nulls")
+            .fail_if(
+                "SELECT account, SUM(amt) FROM __output__ GROUP BY account"
+                " HAVING SUM(amt) != 0",
+                name="zero_balance",
+                sample=False,
+            )
+        )
+        builder.apply(mock_spark)
+
+        rules = json.loads(conf_store[_CONF_RULES])
+        # Default sample=True
+        self.assertTrue(rules[0]["sample"])
+        # Explicit sample=False
+        self.assertFalse(rules[1]["sample"])
+
+    def test_fail_if_sample_default_is_true(self):
+        """fail_if() without explicit sample defaults to sample=True."""
+        builder = ValidationRuleBuilder().fail_if("SELECT 1", name="r")
+        self.assertTrue(builder._rules[0]["sample"])
+
     # -----------------------------------------------------------------------
     # 8.12 from_file() loads rules and further fail_if() calls append
     # -----------------------------------------------------------------------

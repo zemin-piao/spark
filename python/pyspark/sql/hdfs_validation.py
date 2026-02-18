@@ -77,6 +77,7 @@ class ValidationRuleBuilder:
         *,
         name: str,
         description: str = "",
+        sample: bool = True,
     ) -> "ValidationRuleBuilder":
         """Add a validation rule.
 
@@ -89,6 +90,23 @@ class ValidationRuleBuilder:
             Unique identifier used in error reports.
         description:
             Human-readable label included in the exception message.
+        sample:
+            When ``True`` (default), the protocol automatically appends
+            ``LIMIT 10`` to row-returning queries that have no existing
+            ``LIMIT`` clause, collecting only a small sample of offending
+            rows.  Set to ``False`` to collect every offending row — useful
+            when you need the full set of violations, for example::
+
+                .fail_if(
+                    "SELECT account, SUM(amount) FROM __output__"
+                    " GROUP BY account HAVING SUM(amount) != 0",
+                    name="zero_balance_accounts",
+                    description="All account balances must net to zero",
+                    sample=False,   # collect all offending accounts
+                )
+
+            Has no effect on aggregate / ``GROUP BY`` queries, which are
+            never auto-limited regardless of this flag.
 
         Returns
         -------
@@ -96,7 +114,7 @@ class ValidationRuleBuilder:
             The builder, for method chaining.
         """
         self._rules.append(
-            {"name": name, "failIf": query, "description": description}
+            {"name": name, "failIf": query, "description": description, "sample": sample}
         )
         return self
 
@@ -205,5 +223,6 @@ class ValidationRuleBuilder:
                 rule["failIf"],
                 name=rule["name"],
                 description=rule.get("description", ""),
+                sample=rule.get("sample", True),
             )
         return builder
