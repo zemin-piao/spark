@@ -17,11 +17,12 @@
 
 package org.apache.spark.internal.io
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 import java.nio.charset.StandardCharsets
 
-import scala.collection.mutable
-import scala.util.parsing.json.{JSON => ScalaJSON}
+import scala.jdk.CollectionConverters._
+
+import com.fasterxml.jackson.core.JsonParseException
+import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
@@ -102,45 +103,61 @@ private object CommitValidationException {
 
 private[io] object SqlValidationRuleJson {
 
+  private val mapper = new ObjectMapper()
+
   /** Serialise a single rule to a JSON object string. */
-  def toJson(rule: SqlValidationRule): String = {
-    val name = escapeJson(rule.name)
-    val failIf = escapeJson(rule.failIf)
-    val description = escapeJson(rule.description)
-    s"""{"name":"$name","failIf":"$failIf","description":"$description"}"""
-  }
+  def toJson(rule: SqlValidationRule): String =
+    mapper.writeValueAsString(
+      mapper.createObjectNode()
+        .put("name", rule.name)
+        .put("failIf", rule.failIf)
+        .put("description", rule.description))
 
   /** Serialise a sequence of rules to a JSON array string. */
-  def toJsonArray(rules: Seq[SqlValidationRule]): String =
-    rules.map(toJson).mkString("[", ",", "]")
+  def toJsonArray(rules: Seq[SqlValidationRule]): String = {
+    val arrayNode = mapper.createArrayNode()
+    rules.foreach { r =>
+      arrayNode.add(
+        mapper.createObjectNode()
+          .put("name", r.name)
+          .put("failIf", r.failIf)
+          .put("description", r.description))
+    }
+    mapper.writeValueAsString(arrayNode)
+  }
 
   /**
    * Parse a JSON array string into a sequence of [[SqlValidationRule]]s.
    * Throws [[IllegalArgumentException]] on malformed input.
    */
   def parseRulesJson(json: String): Seq[SqlValidationRule] = {
-    ScalaJSON.parseFull(json) match {
-      case Some(list: List[_]) =>
-        list.map {
-          case obj: Map[_, _] =>
-            val m = obj.asInstanceOf[Map[String, Any]]
-            def str(key: String): String = m.get(key) match {
-              case Some(s: String) => s
-              case _ =>
-                throw new IllegalArgumentException(
-                  s"SqlValidationRule JSON missing or non-string field '$key' in: $obj")
-            }
-            SqlValidationRule(
-              name = str("name"),
-              failIf = str("failIf"),
-              description = str("description"))
-          case other =>
-            throw new IllegalArgumentException(
-              s"SqlValidationRule JSON array element is not an object: $other")
+    val root: JsonNode =
+      try {
+        mapper.readTree(json)
+      } catch {
+        case e: JsonParseException =>
+          throw new IllegalArgumentException(
+            s"Failed to parse SqlValidationRule JSON: ${e.getMessage}", e)
+      }
+
+    if (!root.isArray) {
+      throw new IllegalArgumentException(
+        s"Expected a JSON array of SqlValidationRule objects, got: $json")
+    }
+
+    root.elements().asScala.toSeq.map { node =>
+      def str(key: String): String = {
+        val field = node.get(key)
+        if (field == null || !field.isTextual) {
+          throw new IllegalArgumentException(
+            s"SqlValidationRule JSON missing or non-string field '$key' in: $node")
         }
-      case _ =>
-        throw new IllegalArgumentException(
-          s"Expected a JSON array of SqlValidationRule objects, got: $json")
+        field.asText()
+      }
+      SqlValidationRule(
+        name = str("name"),
+        failIf = str("failIf"),
+        description = str("description"))
     }
   }
 
@@ -159,11 +176,4 @@ private[io] object SqlValidationRuleJson {
     }
     parseRulesJson(json)
   }
-
-  private def escapeJson(s: String): String =
-    s.replace("\\", "\\\\")
-      .replace("\"", "\\\"")
-      .replace("\n", "\\n")
-      .replace("\r", "\\r")
-      .replace("\t", "\\t")
 }

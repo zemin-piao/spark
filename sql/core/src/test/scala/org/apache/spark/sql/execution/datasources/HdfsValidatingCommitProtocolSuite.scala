@@ -103,6 +103,26 @@ class HdfsValidatingCommitProtocolSuite extends QueryTest with SharedSparkSessio
     }
   }
 
+  test("resolveRules: file-backed conf (tier 3) used when override and inline conf are empty") {
+    val passingRule = SqlValidationRule(
+      "always_pass_file", "SELECT * FROM __output__ WHERE 1 = 0", "never triggers")
+    withTempDir { rulesDir =>
+      // Write the rules JSON to a local temp file
+      val rulesFile = new java.io.File(rulesDir, "rules.json")
+      val rulesJson = SqlValidationRuleJson.toJsonArray(Seq(passingRule))
+      java.nio.file.Files.write(rulesFile.toPath, rulesJson.getBytes("UTF-8"))
+
+      withSQLConf(
+        SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key -> PROTOCOL_CLASS,
+        CONF_RULES_FILE -> rulesFile.toURI.toString) {
+        withTempDir { outputDir =>
+          spark.range(7).write.mode("overwrite").parquet(outputDir.getCanonicalPath)
+          assert(spark.read.parquet(outputDir.getCanonicalPath).count() === 7)
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 8.6 isAggregate classification
   // ---------------------------------------------------------------------------

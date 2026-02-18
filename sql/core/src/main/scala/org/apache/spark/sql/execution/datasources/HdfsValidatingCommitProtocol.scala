@@ -144,6 +144,13 @@ class HdfsValidatingCommitProtocol(
    * Returns true if the SQL is an aggregate query (contains a top-level aggregate function
    * keyword and no row-returning WHERE filter pattern). Aggregate rules do not get LIMIT
    * appended, and are fused differently.
+   *
+   * '''Heuristic limitations''': This is a best-effort text classifier, not a full SQL parser.
+   * Known edge cases:
+   *  - A query with an aggregate in a subquery (e.g. `SELECT * FROM t WHERE v > (SELECT MAX(x)
+   *    FROM t2)`) will be classified as aggregate, suppressing the auto-LIMIT. To avoid
+   *    this, write the outer query without aggregate keywords in the SELECT list.
+   *  - `HAVING` always implies aggregation regardless of context.
    */
   private[datasources] def isAggregate(sql: String): Boolean = {
     val upper = sql.trim.toUpperCase
@@ -163,12 +170,13 @@ class HdfsValidatingCommitProtocol(
   }
 
   /**
-   * Appends `LIMIT 10` to row-returning queries that do not already contain a LIMIT clause.
+   * Appends `LIMIT 10` to row-returning queries that do not already contain a LIMIT clause
+   * (case-insensitive, any form: `LIMIT 10`, `LIMIT ALL`, etc.).
    * Aggregate queries are returned unchanged.
    */
   private[datasources] def applyAutoLimit(sql: String): String = {
     if (isAggregate(sql)) return sql
-    if (sql.trim.toUpperCase.matches("""(?s).*\bLIMIT\s+\d+.*""")) return sql
+    if (sql.trim.toUpperCase.matches("""(?s).*\bLIMIT\b.*""")) return sql
     sql.stripTrailing() + " LIMIT 10"
   }
 
