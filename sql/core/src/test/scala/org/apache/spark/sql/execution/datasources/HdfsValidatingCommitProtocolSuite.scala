@@ -127,7 +127,7 @@ class HdfsValidatingCommitProtocolSuite extends QueryTest with SharedSparkSessio
   // 8.6 isAggregate classification
   // ---------------------------------------------------------------------------
 
-  test("isAggregate: aggregate queries are correctly identified") {
+  test("isAggregate: aggregate function queries are correctly identified") {
     val p = makeProtocol()
     assert(p.isAggregate("SELECT COUNT(*) < 1000 FROM __output__"))
     assert(p.isAggregate("SELECT MAX(amount) > 100 FROM __output__"))
@@ -135,10 +135,29 @@ class HdfsValidatingCommitProtocolSuite extends QueryTest with SharedSparkSessio
     assert(p.isAggregate("SELECT COUNT(*) FROM __output__"))
   }
 
+  test("isAggregate: GROUP BY queries are classified as aggregate (no LIMIT should be appended)") {
+    val p = makeProtocol()
+    // Column-level validation: total sum per account should be zero
+    assert(p.isAggregate(
+      "SELECT account, SUM(amount) FROM __output__ GROUP BY account HAVING SUM(amount) != 0"))
+    // GROUP BY without HAVING still shouldn't get LIMIT
+    assert(p.isAggregate(
+      "SELECT account, SUM(amount) as total FROM __output__ GROUP BY account"))
+    // HAVING without explicit GROUP BY keyword (e.g. implicit grouping)
+    assert(p.isAggregate(
+      "SELECT SUM(revenue) FROM __output__ HAVING SUM(revenue) < 0"))
+  }
+
   test("isAggregate: row-returning queries are not aggregate") {
     val p = makeProtocol()
     assert(!p.isAggregate("SELECT * FROM __output__ WHERE user_id IS NULL"))
     assert(!p.isAggregate("SELECT id, name FROM __output__ WHERE status = 'bad'"))
+  }
+
+  test("applyAutoLimit: GROUP BY queries are not given a LIMIT") {
+    val p = makeProtocol()
+    val sql = "SELECT account, SUM(amount) FROM __output__ GROUP BY account HAVING SUM(amount) != 0"
+    assert(p.applyAutoLimit(sql) === sql)
   }
 
   // ---------------------------------------------------------------------------

@@ -141,32 +141,35 @@ class HdfsValidatingCommitProtocol(
   // -------------------------------------------------------------------------
 
   /**
-   * Returns true if the SQL is an aggregate query (contains a top-level aggregate function
-   * keyword and no row-returning WHERE filter pattern). Aggregate rules do not get LIMIT
-   * appended, and are fused differently.
+   * Returns true if the SQL is an aggregate (column-level) query.
+   * Such queries must NOT have `LIMIT 10` appended, because:
+   *  - `GROUP BY` queries return one row per group — truncating with LIMIT would hide
+   *    offending groups and give a misleading picture.
+   *  - Scalar aggregates (`COUNT(*) < 1000`) return a single row that is already compact.
+   *
+   * Classification signals (any one is sufficient):
+   *  - Contains an aggregate function call: `COUNT(`, `SUM(`, `MIN(`, `MAX(`, `AVG(`,
+   *    `STDDEV(`, `VARIANCE(`
+   *  - Contains a `GROUP BY` clause
+   *  - Contains a `HAVING` clause
+   *
+   * Row-level rules (e.g. `SELECT * FROM __output__ WHERE user_id IS NULL`) match none of
+   * these signals and will have `LIMIT 10` appended automatically.
    *
    * '''Heuristic limitations''': This is a best-effort text classifier, not a full SQL parser.
    * Known edge cases:
-   *  - A query with an aggregate in a subquery (e.g. `SELECT * FROM t WHERE v > (SELECT MAX(x)
-   *    FROM t2)`) will be classified as aggregate, suppressing the auto-LIMIT. To avoid
-   *    this, write the outer query without aggregate keywords in the SELECT list.
-   *  - `HAVING` always implies aggregation regardless of context.
+   *  - A row-returning query that wraps an aggregate subquery
+   *    (e.g. `SELECT * FROM t WHERE v > (SELECT MAX(x) FROM t2)`) will be classified as
+   *    aggregate, suppressing the auto-LIMIT. Workaround: rewrite to avoid aggregate
+   *    keywords in the outer query.
    */
   private[datasources] def isAggregate(sql: String): Boolean = {
     val upper = sql.trim.toUpperCase
-    // Simple heuristic: contains an aggregate function call at the top level.
-    // Covers: COUNT(, SUM(, MIN(, MAX(, AVG(, STDDEV(, VARIANCE(
-    val aggPattern = """(?i)\b(COUNT|SUM|MIN|MAX|AVG|STDDEV|VARIANCE)\s*\(""".r
-    // Also detect HAVING (implies aggregation)
-    val hasAgg = aggPattern.findFirstIn(upper).isDefined || upper.contains("HAVING")
-    // Row-returning rules typically start with SELECT * or SELECT <cols> with a WHERE
-    // that returns individual rows; exclude pure aggregations.
-    // A conservative check: if the SELECT list is just an aggregate expression with no
-    // non-aggregate columns alongside a WHERE, treat as row-returning to be safe.
-    // For our purposes: if the query starts with SELECT ... FROM __OUTPUT__ WHERE ...,
-    // treat as row-returning; otherwise if it has an aggregate, treat as aggregate.
-    val hasWhereWithStar = upper.matches("""(?s)SELECT\s+\*\s+FROM.*WHERE.*""")
-    hasAgg && !hasWhereWithStar
+    // Aggregate function call keywords
+    val aggFnPattern = """(?i)\b(COUNT|SUM|MIN|MAX|AVG|STDDEV|VARIANCE)\s*\(""".r
+    aggFnPattern.findFirstIn(upper).isDefined ||
+      upper.contains("GROUP BY") ||
+      upper.contains("HAVING")
   }
 
   /**
